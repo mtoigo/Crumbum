@@ -1,11 +1,21 @@
 <?php
-/* Crumbum Version 1.3
+/* Crumbum Version 1.4
 For support visit http://www.matt-toigo.com/crumbum
 By downloading this software you have agreed to the terms defined at http://www.matt-toigo.com/crumbum */
 
+/*
+Updated by Ahmad saad solve the following bugs:
+1- Fix a bug: when use list_home ="no" and list_current="no" showing error "undefined variable (html)" (this happend when the crumb contain just 1 element).
+2- add ability to add HTML code to crumb_char param like (<img src="http://www.example/arrow.png" />).
+3- add parent_start && parent_end parameters to set the a container to the crumb link.(e.g parent_start='<div id="nav">' parent_end='</div>' generate <div id="nav"><a href="http://www.example/">Home</a>). Default value "" .
+4- add custom_title parameter to call a custom field text as a crumb title. Default value "title" .
+5- add entry_id && url_title parameter to show a new crumb item , when show a single entry page. Default value "" .
+6- add entry_custom_title parameter to call a custom field text as a crumb title. Default value "title" .
+7- add url_entry parameter to specify how curmb will generate the entry link (if link_current="yes" offcours). values(entry_id|url_title Default)
+*/
 $plugin_info = array(
   'pi_name' => 'Crumbum',
-  'pi_version' => '1.3',
+  'pi_version' => '1.4',
   'pi_author' => 'Matt Toigo',
   'pi_author_url' => 'http://www.matt-toigo.com/crumbum',
   'pi_description' => 'Generates breadcrumbs based on URL structure defined in the weblog used by the built in Expression Engine Pages module.',
@@ -26,7 +36,7 @@ class Crumbum //Must use php4 style constructor
 	    global $TMPL, $session;
 	    
 	    //Get any arguments passed
-	    $ourParams = array('short_name', 'list_home', 'home_url', 'crumb_char', 'list_current', 'link_current', 'debug');
+		    $ourParams = array('short_name', 'list_home', 'home_url', 'crumb_char', 'list_current', 'link_current', 'debug' , 'parent_start' , 'parent_end','custom_title', 'entry_custom_title' , 'entry_id' , 'url_title','url_entry');
 	    foreach($ourParams as $param)
 	    	$params[$param] = $this->EE->TMPL->fetch_param($param);
 	    
@@ -67,13 +77,14 @@ class Crumbum //Must use php4 style constructor
   		$this->EE =& get_instance();
   		
   		//Check for any SQL related characters in the params
-  		$badChars = array('\'', '"', ',', ';');
+		$html_param= array('crumb_char', 'parent_start' , 'parent_end');
+  		$badChars = array('\'', '"', ',', ';');		
   		$chars = implode('<br />', $badChars);
-  		foreach($params as $param)
+  		foreach($params as $param => $value)
   		{
   			foreach($badChars as $char)
   			{
-  				if(strstr($param, $char))
+  				if(strstr($value, $char) && !in_array($param, $html_param))
   					throw new Exception('Arguments contain illegal characters. The following characters are not allowed in Crumbum arguments<br />'.$chars);
   			}
   		}
@@ -114,10 +125,9 @@ class Crumbum //Must use php4 style constructor
   									  WHERE configuration_name = 'default_channel';";
   			
   			$query = $this->EE->db->query($getDefaultPagesWeblog);
-  			
   			$defaultPagesWeblog = $query->row('configuration_value');
   			
-	  		if($defaultPagesWeblog>0)
+	  		if($defaultPagesWeblog>0 && !is_array($defaultPagesWeblog))
 	  		{
 	  			$this->weblogID = $defaultPagesWeblog;
 	  			
@@ -127,7 +137,7 @@ class Crumbum //Must use php4 style constructor
 	  						 WHERE channel_id = '".$defaultPagesWeblog."';";
 	  						
 	  			$query = $this->EE->db->query($findSiteID);
-				$this->siteID = $query->row('site_id');	  			
+					$this->siteID = $query->row('site_id');	  			 
 	  		}
   			else
   			{
@@ -179,8 +189,8 @@ class Crumbum //Must use php4 style constructor
   		return $params;
   	}
   	
-  	//Get everything we need
-  	private function populatePages()
+  //Get everything we need
+  private function populatePages()
 	{
 		$pageURLs = $this->getPageURLs();
 		$this->setPageTitles($pageURLs);
@@ -212,9 +222,23 @@ class Crumbum //Must use php4 style constructor
 		
 		if(empty($pageURLs))
 			throw new Exception('You have no entries in your weblog with URLs defined by the Expression Engine Pages Module');
-	
+
+		$title_field = "title" ;
+		
+		if($this->EE->TMPL->fetch_param('custom_title')){
+			$getfieldid="SELECT field_id 
+			FROM ".$this->EE->db->dbprefix('channel_fields')."
+			WHERE field_name = '".$this->EE->TMPL->fetch_param('custom_title')."';";
+			
+			$query = $this->EE->db->query($getfieldid);
+			if($query->num_rows() == 0)
+				throw new Exception('No matching channel field found');
+			else	
+				$title_field = "field_id_".$query->row('field_id');
+		}
+			
 		/* Get users and their pages */
-		$getAllPages = "SELECT exp_channel_data.entry_id, title, edit_date
+		$getAllPages = "SELECT exp_channel_data.entry_id,".$title_field." as title, edit_date
 		FROM exp_channel_data
 		INNER JOIN exp_channel_titles ON exp_channel_titles.entry_id = exp_channel_data.entry_id
 		WHERE exp_channel_data.channel_id = {$this->weblogID};";
@@ -257,23 +281,64 @@ class Crumbum //Must use php4 style constructor
 		$urlParts = $this->getURLParts();
 		if(empty($this->pages))
 			throw new Exception('No entries in the specified weblog have a Page URL defined.');
-		
+		$urlCount = count(@$urlParts);
 		$lookingFor = 0;
 		foreach($this->pages as $page)
 		{
-			if(strstr($page->url, @$urlParts[$lookingFor]))
+			if($page->url =="/")
+			{
+			 $home=$page;
+			}
+			elseif(strstr($page->url, @$urlParts[$lookingFor]))
 			{
 				$crumbs[] = $page;
+				if($lookingFor+1==$urlCount && !empty($home)){break;}
 				$lookingFor++; //Could be more efficient to break when it finds everything it needs
-			}
+			}			
 		}
+		
+		$title_field = "title" ;
+	
+		if(!empty($params['entry_custom_title']) && ( !empty($params['entry_id']) || !empty($params['url_title']) )  ){
+			$getfieldid="SELECT field_id 
+			FROM ".$this->EE->db->dbprefix('channel_fields')."
+			WHERE field_name = '".$this->EE->TMPL->fetch_param('entry_custom_title')."';";
+			
+			$query = $this->EE->db->query($getfieldid);
+			if($query->num_rows() == 0)
+				throw new Exception('No matching channel field found');
+			else	
+				$title_field = "field_id_".$query->row('field_id');
+		}
+		
+		$where_entry = (!empty($params['entry_id']))? "WHERE cd.entry_id =".$params['entry_id'] : ( (!empty($params['url_title']))? "WHERE url_title ='".$params['url_title']."'" : "")  ;
+		
+		$url_entry = ($params['url_entry']=="entry_id")? $params['url_entry'] : "url_title";
+			
+		if(!empty($where_entry)){
+			$getentryinfo = "SELECT cd.entry_id,".$title_field." as title,url_title, edit_date
+			FROM ".$this->EE->db->dbprefix('channel_data')." as cd
+			INNER JOIN ".$this->EE->db->dbprefix('channel_titles')." as ct  ON ct.entry_id = cd.entry_id
+			".$where_entry.";";
+			
+			$query = $this->EE->db->query($getentryinfo);
+			if($query->num_rows() == 0)
+				throw new Exception('No matching channel entry found');
+			else	
+				$crumbs[] = new CrumbumPage($query->row('entry_id'), $query->row('title'), end($crumbs)."/".$query->row($url_entry));		
+		}
+		
+		
 		$crumbCount = count(@$crumbs);
 		
+		$html = "";		
 		if($params['list_home']=='yes')
 		{
-			$html = '<a href="'.$params['home_url'].'">Home</a>' ;
-			$html .= $params['crumb_char'];
-		}
+			$html .= $params['parent_start'];
+			$html .= '<a href="'.$params['home_url'].'">'.$home->title.'</a>' ;
+			$html .= $params['parent_end'];
+			$html .= $params['crumb_char'];			
+		}		
 		
 		if($params['list_current']=='yes')
 			$stopAt	= $crumbCount;
@@ -282,13 +347,16 @@ class Crumbum //Must use php4 style constructor
 			
 		for($i=0;$i<$stopAt;$i++)
 		{
+			$html .= $params['parent_start'];
 			if(($i+1!=$stopAt && $params['list_current']=='yes') || ($i!=$stopAt && $params['list_current']=='no') || ($params['link_current']=='yes' && $params['list_current']=='yes'))
 				@$html .= '<a href="'.$params['home_url'].$params['index'].$crumbs[$i]->url.'">'.$crumbs[$i]->title.'</a>';
 			else
 				@$html .= $crumbs[$i]->title;
 				
+			$html .= $params['parent_end'];
+			
 			if($i+1!=$stopAt)
-				$html .= $params['crumb_char'];
+				$html .= $params['crumb_char'];							
 		}
 
 		return $html;
